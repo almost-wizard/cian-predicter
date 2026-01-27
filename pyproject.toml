@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cian-parser"
+version = "0.1.0"
+description = "Asynchronous parser for Cian rental data in SPb"
+readme = "README.md"
+authors = [{ name = "Alex", email = "alexo375@yandex.ru" }]
+requires-python = ">=3.10"
+dependencies = [
+    "playwright>=1.40.0",
+    "pydantic>=2.5.0",
+    "loguru>=0.7.2",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+namespaces = false
+
+[project.optional-dependencies]
+dev = ["ruff"]
+
+# --- Настройки инструментов ---
+[tool.ruff]
+line-length = 120
+select = ["E", "F", "I"] # Enable pycodestyle errors, Pyflakes, and isort
+ignore = []

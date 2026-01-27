@@ -1,4 +1,4 @@
-# Cian Predicter
+# Cian Parser
 Parser for Cian.ru rental data.
 
 ```shell
