@@ -1,1 +1,1 @@
-# Cian data analyzer
+# Cian ML algos implementation
