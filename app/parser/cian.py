@@ -18,101 +18,237 @@ class CianParser(BaseParser):
         self.writer = JsonlWriter(config.OUTPUT_FILE)
         self.timer = Timer()
 
+        # Состояние парсера
+        self.current_page_timeout = config.TIMEOUT  # Таймаут для page.goto
+        self.current_retry_delay = config.BASE_RETRY_DELAY  # Пауза перед ретраем
+        self.consecutive_successes = 0
+
+    async def _retry_action(self, action_name: str, action_func):
+        """
+        Универсальная обертка для выполнения действий с ретраями и раздельным управлением таймаутами.
+        """
+        for attempt in range(1, config.MAX_RETRIES + 1):
+            try:
+                # Выполняем функцию
+                await action_func()
+
+                # Если успешно:
+                self.consecutive_successes += 1
+                if self.consecutive_successes >= config.SUCCESS_THRESHOLD_FOR_RESET:
+                    # Сброс параметров к дефолтным при стабильной работе
+                    if self.current_page_timeout > config.TIMEOUT or self.current_retry_delay > config.BASE_RETRY_DELAY:
+                        log.info("Stable connection detected. Resetting timeouts/delays to defaults.")
+                        self.current_page_timeout = config.TIMEOUT
+                        self.current_retry_delay = config.BASE_RETRY_DELAY
+
+                    self.consecutive_successes = 0
+                return True
+
+            except Exception as e:
+                err_msg = str(e).lower()
+                is_bot_block = "anti-bot" in err_msg or "vpn" in err_msg or "captcha" in err_msg
+
+                log.warning(f"Error during '{action_name}' (Attempt {attempt}/{config.MAX_RETRIES}): {e}")
+
+                if is_bot_block:
+                    # При бане (VPN/Капча) главное - подождать подольше
+                    new_delay = int(self.current_retry_delay * config.RETRY_DELAY_MULTIPLIER)
+                    self.current_retry_delay = min(new_delay, config.MAX_RETRY_DELAY)
+                    log.warning(f"Bot block detected! Increasing retry delay to {self.current_retry_delay}s")
+                else:
+                    # При сетевых ошибках немного увеличиваем таймаут загрузки и паузу
+                    new_timeout = int(self.current_page_timeout * 1.5)
+                    self.current_page_timeout = min(new_timeout, config.MAX_PAGE_TIMEOUT)
+
+                    new_delay = int(self.current_retry_delay * 1.5)
+                    self.current_retry_delay = min(new_delay, 60)  # Для сети не ждем так долго, как для бана
+
+                    log.info(f"Network glitch. Increasing page timeout to {self.current_page_timeout}ms")
+
+                # Сбрасываем счетчик успехов
+                self.consecutive_successes = 0
+
+                # Пауза перед следующей попыткой
+                log.info(f"Waiting {self.current_retry_delay}s before retry...")
+                await self.timer.sleep(self.current_retry_delay, self.current_retry_delay)
+
+        log.error(f"Failed '{action_name}' after {config.MAX_RETRIES} attempts.")
+        return False
+
     async def run(self):
         await self.browser_service.start()
 
+        # Создаем постоянный контекст для навигации по каталогу
+        listing_context, listing_page = await self.browser_service.get_new_context()
+
         try:
-            # Итерация по страницам листинга
-            # Диапазон от до 1000 гарантирует сбор тысяч объявлений (или продолжение с определенной страницы)
-            for page_num in range(237, 1001):
-                should_continue = await self.process_listing_page(page_num)
+            log.info(f"Opening Catalog: {config.BASE_URL}")
 
-                if not should_continue:
-                    log.info("No more offers found. Stopping.")
+            # Переходим на стартовую страницу
+            await listing_page.goto(config.BASE_URL, timeout=config.TIMEOUT, wait_until="domcontentloaded")
+            await self.timer.sleep(2, 4)  # Даем время на полную прогрузку
 
+            # Инициализируем номер страницы. По умолчанию 1.
+            page_num = 1
+
+            # Логика "умного" пропуска страниц
+            if config.START_PAGE > 1:
+                page_num = await self._fast_forward_to_page(listing_page, config.START_PAGE)
+
+            while True:
+                log.info(f"Processing listing page {page_num}...")
+
+                # 1. Извлекаем URL предложений с текущего вида страницы
+                content = await listing_page.content()
+                offer_urls = self._extract_offer_urls(content)
+                log.info(f"Found {len(offer_urls)} offers on page {page_num}.")
+
+                # 2. Обрабатываем каждое предложение (в отдельных контекстах)
+                if offer_urls:
+                    for offer_url in offer_urls:
+                        await self.process_offer_page(offer_url)
+                        # Короткая пауза между открытиями карточек
+                        await self.timer.sleep(1, 3)
+                else:
+                    log.warning(f"No offers found on page {page_num}. Might be captcha or empty page.")
+
+                # 3. Переход на следующую страницу
+                if not await self._click_next_page(listing_page):
+                    log.info("Pagination ended or failed.")
+                    break
+
+                page_num += 1
+                # Страховочный лимит (на всякий случай)
+                if page_num > 1000:
+                    log.info("Reached page limit (1000). Stopping.")
                     break
 
         except Exception as e:
             log.error(f"Critical error during parsing: {e}")
-
         finally:
+            await listing_context.close()
             await self.browser_service.stop()
 
-    async def process_listing_page(self, page_num: int) -> bool:
+    async def _fast_forward_to_page(self, page, target_page: int) -> int:
         """
-        Обрабатывает страницу списка объявлений.
-
-        Args:
-            page_num (int): Номер страницы для обработки.
-
-        Returns:
-            bool: True, если объявления были найдены и следует продолжать, иначе False.
+        Быстро перематывает пагинацию к целевой странице.
         """
+        log.info(f"Fast-forwarding to page {target_page}...")
 
-        context, page = await self.browser_service.get_new_context()
-        offer_urls = []
+        while True:
+            # Обновляем текущее состояние (без ретраев, это чтение)
+            nav = page.locator('nav[data-name="Pagination"]')
+            current_span = nav.locator("button[disabled] span")
 
-        try:
-            url = f"{config.BASE_URL}?p={page_num}"
+            current_val = 1
+            if await current_span.count() > 0:
+                txt = await current_span.first.text_content()
+                if txt and txt.strip().isdigit():
+                    current_val = int(txt.strip())
 
-            log.info(f"Scanning listing page {page_num}: {url}")
-            await page.goto(url, timeout=config.TIMEOUT, wait_until="domcontentloaded")
-            await page.wait_for_timeout(2000)
+            log.info(f"Current page on site: {current_val}")
+            if current_val >= target_page:
+                log.info(f"Reached or passed target page {target_page}.")
+                return current_val
 
-            content = await page.content()
-            offer_urls = self._extract_offer_urls(content)
+            # Ищем кнопку для прыжка
+            spans = nav.locator("span")
+            count = await spans.count()
+            best_jump_span_idx = -1
+            best_jump_val = -1
 
-        except Exception as e:
-            log.error(f"Error processing listing page {page_num}: {e}")
-            return True  # Продолжаем попытки со следующей страницей на случай временной ошибки
+            for i in range(count):
+                txt = await spans.nth(i).text_content()
+                if not txt:
+                    continue
+                txt = txt.strip()
+                if txt.isdigit():
+                    val = int(txt)
+                    if val == target_page:
+                        best_jump_span_idx = i
+                        best_jump_val = val
+                        break
+                    if val > current_val and val > best_jump_val:
+                        best_jump_span_idx = i
+                        best_jump_val = val
 
-        finally:
-            await context.close()
+            if best_jump_span_idx != -1:
+                log.info(f"Jumping from {current_val} to {best_jump_val}...")
 
-        if not offer_urls:
-            log.warning(f"No offers found on page {page_num}.")
-            return False
+                # Функция клика прыжка для ретрая
+                async def _jump_task():
+                    target_span = spans.nth(best_jump_span_idx)
+                    btn = target_span.locator("..")
+                    await btn.scroll_into_view_if_needed()
+                    await btn.click(timeout=self.current_page_timeout)
+                    await page.wait_for_load_state("domcontentloaded", timeout=self.current_page_timeout)
+                    await self.timer.sleep(2, 4)
 
-        log.info(f"Found {len(offer_urls)} offers on page {page_num}. Starting detailed parsing...")
+                success = await self._retry_action(f"jump_to_{best_jump_val}", _jump_task)
+                if not success:
+                    log.error("Jump failed even after retries.")
+                    if not await self._click_next_page(page):
+                        return current_val
+            else:
+                log.info("No numeric jump found, clicking 'Next'...")
+                if not await self._click_next_page(page):
+                    return current_val
 
-        for offer_url in offer_urls:
-            await self.process_offer_page(offer_url)
+    async def _click_next_page(self, page) -> bool:
+        """Клик по кнопке 'Дальше' с ретраями."""
 
-            # Случайная пауза между предложениями
-            await self.timer.sleep(2, 4)
+        async def _click_task():
+            pagination_nav = page.locator('nav[data-name="Pagination"]')
+            next_span = pagination_nav.locator("span", has_text="Дальше")
 
-        # Случайная пауза между страницами пагинации
-        await self.timer.sleep(3, 6)
+            if await next_span.count() == 0:
+                all_buttons = pagination_nav.locator("button")
+                if await all_buttons.count() > 0:
+                    next_button = all_buttons.nth(await all_buttons.count() - 1)
+                else:
+                    raise Exception("No buttons in pagination nav")
+            else:
+                next_button = next_span.locator("..")
 
-        return True
+            if await next_button.count() == 0 or await next_button.is_disabled():
+                raise Exception("Next button not found or disabled")
+
+            await next_button.scroll_into_view_if_needed()
+            await next_button.click(timeout=self.current_page_timeout)
+
+            # Ждем загрузки
+            await page.wait_for_load_state("domcontentloaded", timeout=self.current_page_timeout)
+            await self.timer.sleep(3, 5)
+
+        return await self._retry_action("click_next_page", _click_task)
 
     async def process_offer_page(self, url: str):
-        context, page = await self.browser_service.get_new_context()
-        try:
-            log.debug(f"Parsing offer: {url}")
-            await page.goto(url, timeout=config.TIMEOUT, wait_until="domcontentloaded")
-
+        # Обертка для логики одного объявления
+        async def _parse_task():
+            context, page = await self.browser_service.get_new_context()
             try:
-                await page.wait_for_selector("div[data-name='AddressContainer']", timeout=5000)
-            except:
-                log.warning(f"Timeout waiting for page load: {url}")
+                log.debug(f"Parsing offer: {url} (Timeout: {self.current_page_timeout}ms)")
+                await page.goto(url, timeout=self.current_page_timeout, wait_until="domcontentloaded")
 
-            # Небольшая случайная задержка после загрузки перед "чтением"
-            await self.timer.sleep(0.5, 1.5)
+                try:
+                    await page.wait_for_selector("div[data-name='AddressContainer']", timeout=5000)
+                except:
+                    pass
 
-            content = await page.content()
-            item = self._parse_detail_html(content, url)
+                await self.timer.sleep(0.5, 1.5)
+                content = await page.content()
+                item = self._parse_detail_html(content, url)
 
-            if item:
-                self.writer.write_item(item)
-                log.info(f"Saved: {item.address[:30]}... | {item.price_per_month}")
-            else:
-                log.warning(f"Parsed item is empty for {url}")
+                if item:
+                    self.writer.write_item(item)
+                    log.info(f"Saved: {item.address[:30]}... | {item.price_per_month}")
+                else:
+                    log.warning(f"Parsed item is empty for {url}")
+            finally:
+                await context.close()
 
-        except Exception as e:
-            log.error(f"Failed to parse offer {url}: {e}")
-        finally:
-            await context.close()
+        # Запускаем через ретрай-механизм
+        await self._retry_action(f"parse_offer_{url}", _parse_task)
 
     def _extract_offer_urls(self, html: str) -> List[str]:
         soup = BeautifulSoup(html, "lxml")
@@ -160,11 +296,18 @@ class CianParser(BaseParser):
         def clean_digits(text):
             return re.sub(r"[^\d]", "", text)
 
-        try:
-            # 0. Заголовок (H1)
-            h1 = soup.find("h1")
-            item.title = get_text(h1)
+        # 0. Заголовок (H1) и проверка на блокировку
+        h1 = soup.find("h1")
+        title_text = get_text(h1)
 
+        # Список стоп-слов, указывающих на бан
+        block_keywords = ["vpn", "доступ ограничен", "captcha", "капча", "security check"]
+        if any(w in title_text.lower() for w in block_keywords):
+            raise Exception(f"Anti-Bot Block detected: {title_text}")
+
+        item.title = title_text
+
+        try:
             # 1. Адрес
             addr_container = soup.find("div", {"data-name": "AddressContainer"})
             if addr_container:
@@ -191,6 +334,17 @@ class CianParser(BaseParser):
                 clean = clean_digits(raw_price)
                 if clean:
                     item.price_per_month = int(clean)
+
+            # Если цена не найдена - это критично для нашего датасета
+            if item.price_per_month is None:
+                # Возможно, верстка отличается или это архивное объявление
+                # Проверим на "снято с публикации"
+                if "снято" in html.lower() or "архив" in html.lower():
+                    log.warning(f"Offer {url} seems to be archived/inactive.")
+                    return None  # Не ретраим, просто пропускаем
+
+                # Иначе считаем это ошибкой парсинга и пробуем ретрай (вдруг не прогрузилось)
+                raise Exception("Price not found on page")
 
             # 4. Обработка фактов (Единая логика для всех блоков фактов)
             # Ищем пары ключ-значение в различных контейнерах и заполняем item.facts
@@ -274,6 +428,9 @@ class CianParser(BaseParser):
                         item.features.append(name)
 
         except Exception as e:
+            # Если это наше исключение про бан - пробрасываем выше
+            if "Anti-Bot" in str(e) or "Price not found" in str(e):
+                raise e
             log.error(f"Partial parsing error on {url}: {e}")
 
         return item

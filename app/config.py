@@ -21,9 +21,22 @@ class Config:
     BASE_URL = "https://spb.cian.ru/snyat-kvartiru/"
 
     # Настройки парсера
-    TIMEOUT: int = 30000  # мс для playwright
-    MAX_RETRIES: int = 3
-    DELAY_RANGE: tuple[int, int] = (2, 5)  # секунды между запросами
+    START_PAGE: int = int(os.getenv("START_PAGE", "40"))
+
+    # FIXME: Absolutely useless timeout...
+    # Таймаут загрузки страницы (Playwright)
+    TIMEOUT: int = 30000  # мс (начальный)
+    MAX_PAGE_TIMEOUT: int = 60000  # мс (предел)
+
+    # Задержки между повторными попытками (Exponential Backoff)
+    BASE_RETRY_DELAY: int = 5  # секунд
+    MAX_RETRY_DELAY: int = 600  # секунд (10 минут)
+    RETRY_DELAY_MULTIPLIER: float = 2.0
+
+    MAX_RETRIES: int = 5
+    SUCCESS_THRESHOLD_FOR_RESET: int = 5  # Сброс после N успехов
+
+    DELAY_RANGE: tuple[int, int] = (2, 5)  # секунды между запросами (штатная пауза)
 
     # Коэффициент рандомизации (0.25 = +/- 25% отклонения от выбранного времени)
     TIME_VARIANCE: float = 0.25
