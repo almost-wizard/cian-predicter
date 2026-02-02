@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cian-ml-implementation"
+version = "0.1.0"
+description = "Real-time rental price prediction service & parser for SPb"
+readme = "README.md"
+authors = [{ name = "Alex", email = "alexo375@yandex.ru" }]
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.5.0",
+    "loguru>=0.7.2",
+    "numpy>=1.26.0",
+    "scikit-learn>=1.4.0",
+    "catboost>=1.2.0",
+    "shap>=0.44.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "python-multipart>=0.0.9",
+    "pydantic-settings>=2.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+namespaces = false
+
+[project.optional-dependencies]
+dev = ["ruff", "pytest"]
+
+# --- Настройки инструментов ---
+[tool.ruff]
+line-length = 120
+select = ["E", "F"] # Enable pycodestyle errors, Pyflakes
+ignore = []

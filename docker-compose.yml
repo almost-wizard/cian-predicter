@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  cian_predicter_api:
+    build:
+      context: .
+    container_name: cian_predicter_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+      - ./logs:/app/logs
+      - ./models:/app/models
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
