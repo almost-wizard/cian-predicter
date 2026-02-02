@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # --- ML Параметры ---
     # Границы диапазона цены, используемые для отображения "вилки" цены
     PREDICTION_MARGIN_PERCENT: float = 0.15
+    SHAP_INFLUENCE_ROUND_PRECISION: int = 4
 
     # --- Логирование ---
     LOG_LEVEL: str = "INFO"
