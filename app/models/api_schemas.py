@@ -4,7 +4,8 @@ from pydantic import BaseModel
 
 class ModelFeatures(BaseModel):
     """
-    Структура признаков для ML-модели.
+    Строго типизированная структура признаков для ML-модели.
+    Описывает вектор признаков, который ожидает CatBoost модель.
     """
 
     metro_nearest_time: int
@@ -23,7 +24,6 @@ class ModelFeatures(BaseModel):
     utility_fixed_bill: int
     utility_usage_bill_flg: int
     utility_counters_extra_flg: int
-    deposit: int
     comission: float
     prepayment_months_cnt: int
     rent_term_months_cnt: int
@@ -53,7 +53,11 @@ class ModelFeatures(BaseModel):
     district_vyborgsky_flg: int
 
     def to_list(self) -> List[Any]:
-        """Возвращает значения в порядке, строго соответствующем фичам модели."""
+        """
+        Возвращает значения признаков в виде списка.
+        Порядок значений соответствует порядку признаков модели CatBoost.
+        Любое изменение порядка приведет к неверным предсказаниям.
+        """
         return [
             self.metro_nearest_time,
             self.total_area,
@@ -71,7 +75,6 @@ class ModelFeatures(BaseModel):
             self.utility_fixed_bill,
             self.utility_usage_bill_flg,
             self.utility_counters_extra_flg,
-            self.deposit,
             self.comission,
             self.prepayment_months_cnt,
             self.rent_term_months_cnt,
@@ -103,10 +106,12 @@ class ModelFeatures(BaseModel):
 
 
 class ApartmentFeaturesInput(BaseModel):
-    """Вложенный объект 'features' из JSON"""
+    """
+    Вложенный объект 'features' из входящего JSON.
+    Содержит структурированные характеристики квартиры.
+    """
 
     hcs_price: str = "0"
-    deposit: int = 0
     comission: float = 0.0
     metro_cnt: int = 0
     metro_nearest_time: int = 0
@@ -134,7 +139,10 @@ class ApartmentFeaturesInput(BaseModel):
 
 
 class RawApartmentInput(BaseModel):
-    """Входной формат данных для API"""
+    """
+    Входной формат данных для API.
+    Соответствует JSON-структуре, приходящей от клиента.
+    """
 
     title: str = ""
     price_per_month: Optional[int] = None
@@ -144,11 +152,19 @@ class RawApartmentInput(BaseModel):
 
 
 class PredictionResponseItem(BaseModel):
-    price: int
+    """
+    Объект результата предсказания для одной квартиры.
+    """
+
+    predicted_price: int
     price_range_low: int
     price_range_high: int
     undervalued_percent: Optional[float] = None
 
 
 class PredictionResponse(BaseModel):
+    """
+    Главный объект ответа API.
+    """
+
     predictions: List[PredictionResponseItem]

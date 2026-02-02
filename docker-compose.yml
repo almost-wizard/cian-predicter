@@ -8,6 +8,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      - ./app:/app/app
       - ./logs:/app/logs
       - ./models:/app/models
     restart: unless-stopped

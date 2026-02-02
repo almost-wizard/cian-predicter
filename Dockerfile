@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 
-# Устанавливаем зависимости (включая dev для тестов)
+# Устанавливаем зависимости
 RUN pip install --upgrade pip && \
     pip install -e ".[dev]"
 
